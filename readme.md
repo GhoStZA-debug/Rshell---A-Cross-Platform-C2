@@ -114,9 +114,9 @@ mimikatz：
 
 执行bof：
 
-![image-20251208111033814](/home/Rubby/Data/Pentest/Creating/Rshell/Rshell---A-Cross-Platform-C2/assets/image-20251208111033814.png)
+![image-20251208111033814](./assets/image-20251208111033814.png)
 
-![image-20251208111045811](/home/Rubby/Data/Pentest/Creating/Rshell/Rshell---A-Cross-Platform-C2/assets/image-20251208111045811.png)
+![image-20251208111045811](./assets/image-20251208111045811.png)
 
 # 相关项目
 
