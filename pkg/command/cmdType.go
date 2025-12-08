@@ -22,5 +22,6 @@ const (
 	FileContent     = 19
 	ExecuteAssembly = 40
 	InlineBin       = 41
+	InlineExecute   = 42
 	Socks5Data      = 50
 )

