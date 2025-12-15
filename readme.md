@@ -14,61 +14,63 @@ Rshell是一款开源的golang编写的支持多平台的C2框架，旨在帮助
 
 **默认账号密码：admin/admin123**
 
-![屏幕截图_20250811_114928](./assets/屏幕截图_20250811_114928.png)
+![image-20251215170249521](./assets/image-20251215170249521.png)
 
-![image-20250811115038528](./assets/image-20250811115038528.png)
+![image-20251215170310085](./assets/image-20251215170310085.png)
 
 ## 添加listener
 
 目前支持websocket、tcp、kcp、http、oss协议监听：
 
-![image-20250811115155092](./assets/image-20250811115155092.png)
+![image-20251215170333265](./assets/image-20251215170333265.png)
+
+![image-20251215170345935](./assets/image-20251215170345935.png)
 
 ## 生成客户端
 
-支持windows、linux（darwin未充分测试）
+支持windows、linux、darwin
 
-**注：客户端需要加上反沙箱默认密码上线  如： r.exe tNROopcR45q4Z8I1  （密码支持自定义）**
+**注：客户端可选配置反沙箱密码上线  如： r.exe tNROopcR45q4Z8I1 **
 
-![image-20250811122429552](./assets/image-20250811122429552.png)
+![image-20251215170444480](./assets/image-20251215170444480.png)
 
 ## Webdelivery
 
-![image-20250811122549734](./assets/image-20250811122549734.png)
+![image-20251215170535367](./assets/image-20251215170535367.png)
 
-![image-20250811122616667](./assets/image-20250811122616667.png)
+![image-20251215170616267](./assets/image-20251215170616267.png)
 
 ## 客户端管理
 
 ### 支持Note、颜色标记
 
-![image-20250811122806585](./assets/image-20250811122806585.png)
+![image-20251215170636840](./assets/image-20251215170636840.png)
 
 ### 命令执行
 
-![image-20250811122858841](./assets/image-20250811122858841.png)
+![image-20251215170735495](./assets/image-20251215170735495.png)
 
 ### 文件管理
 
 双击进入文件夹：
 
-![image-20250811122933247](./assets/image-20250811122933247.png)
-
-双击预览文本文件：
-
-![image-20250811123026475](./assets/image-20250811123026475.png)
+![image-20251215170813937](./assets/image-20251215170813937.png)
 
 ### PID查看
 
-![image-20250811123120401](./assets/image-20250811123120401.png)
+![image-20251215171013713](./assets/image-20251215171013713.png)
+
+杀毒软件识别
+
+![image-20251215171028106](./assets/image-20251215171028106.png)
 
 ### 文件下载
 
-![image-20250811123147926](./assets/image-20250811123147926.png)
+![image-20251215171050625](./assets/image-20251215171050625.png)
 
 ### 笔记
 
-![image-20250811123203135](./assets/image-20250811123203135.png)
+![image-20251215171126935](./assets/image-20251215171126935.png)
 
 ## Windows相关
 
@@ -76,47 +78,45 @@ Rshell是一款开源的golang编写的支持多平台的C2框架，旨在帮助
 
 新增windows的webdelivery后，可以生成stage分阶段的shellcode（体积较小，方便上线）：
 
-![image-20250902101115025](./assets/image-20250902101115025.png)
+![image-20251215171205269](./assets/image-20251215171205269.png)
+
+![image-20251215171222896](./assets/image-20251215171222896.png)
 
 ### 内存执行
 
 windows内存执行 支持Execute Assembly(.net程序内存执行)、Inline Bin(其他exe程序内存执行)、shellcode执行(执行shellcode,方便上线其他C2等)、Inline Execute(执行BOF)：
 
-![image-20250902103025182](./assets/image-20250902103025182.png)
+![image-20251215171403903](./assets/image-20251215171403903.png)
 
 #### execute-assembly
 
 执行badpotato提权：
 
-![image-20250902103434699](./assets/image-20250902103434699.png)
+![image-20251215171526330](./assets/image-20251215171526330.png)
 
-![image-20250902103211593](./assets/image-20250902103211593.png)
+![image-20251215171546854](./assets/image-20251215171546854.png)
 
 #### inline-bin
 
 内存执行fscan：
 
-![image-20250902105312771](./assets/image-20250902105312771.png)
-
-mimikatz：
-
-![image-20250902110428454](./assets/image-20250902110428454.png)
+![image-20251215172334870](./assets/image-20251215172334870.png)
 
 #### shellcode-inject
 
 上线msf：
 
-![image-20250902105352776](./assets/image-20250902105352776.png)
+![image-20251215172443880](./assets/image-20251215172443880.png)
 
-![image-20250902105406612](./assets/image-20250902105406612.png)
+![image-20251215172633049](./assets/image-20251215172633049.png)
 
 #### inline-execute
 
 执行bof：
 
-![image-20251208111033814](./assets/image-20251208111033814.png)
+![image-20251215172730716](./assets/image-20251215172730716.png)
 
-![image-20251208111045811](./assets/image-20251208111045811.png)
+![image-20251215172848925](./assets/image-20251215172848925.png)
 
 # 相关项目
 
