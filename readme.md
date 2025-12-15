@@ -30,7 +30,7 @@ Rshell是一款开源的golang编写的支持多平台的C2框架，旨在帮助
 
 支持windows、linux、darwin
 
-**注：客户端可选配置反沙箱密码上线  如： r.exe tNROopcR45q4Z8I1 **
+**注：客户端可选配置反沙箱密码上线  如： r.exe tNROopcR45q4Z8I1**
 
 ![image-20251215170444480](./assets/image-20251215170444480.png)
 
