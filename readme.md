@@ -94,7 +94,7 @@ windows内存执行 支持Execute Assembly(.net程序内存执行)、Inline Bin(
 
 ![image-20251215171526330](./assets/image-20251215171526330.png)
 
-![image-20251215171546854](./assets/image-20251215171546854.png)
+![image-20251216154821723](./assets/image-20251216154821723.png)
 
 #### inline-bin
 

