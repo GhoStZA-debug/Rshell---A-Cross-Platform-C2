@@ -73,7 +73,7 @@ var (
 )
 
 // NewOSSClient 创建新的OSS客户端
-func NewOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName string) *OSSClient {
+func NewOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName string, stopchan chan struct{}) *OSSClient {
 	return &OSSClient{
 		Config: &OSSConfig{
 			Endpoint:        endpoint,
@@ -84,16 +84,16 @@ func NewOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName string) *OS
 			MaxWorkers:      10,              // 最大工作协程数
 			RetryCount:      3,               // 重试次数
 		},
-		StopChan:   make(chan struct{}),
+		StopChan:   stopchan,
 		WorkerPool: make(chan struct{}, 10),
 		Stats:      &OSSStats{},
 	}
 }
 
 // HandleOSSConnection 处理OSS连接（优化版）
-func HandleOSSConnection(endpoint, accessKeyID, accessKeySecret, bucketName string) {
+func HandleOSSConnection(endpoint, accessKeyID, accessKeySecret, bucketName string, stopchan chan struct{}) {
 	// 创建客户端
-	client := NewOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName)
+	client := NewOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName, stopchan)
 
 	// 注册到全局管理器
 	ossKey := endpoint + ":" + accessKeyID + ":" + bucketName

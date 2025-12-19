@@ -74,11 +74,12 @@ func AddListener(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": 400, "data": "Listener already exists"})
 		return
 	}
-
-	// 检查端口是否可用
-	if !isPortAvailable(listener.ListenAddress) {
-		c.JSON(http.StatusOK, gin.H{"status": 400, "data": "Port is not available"})
-		return
+	if listener.Type != "oss" {
+		// 检查端口是否可用
+		if !isPortAvailable(listener.ListenAddress) {
+			c.JSON(http.StatusOK, gin.H{"status": 400, "data": "Port is not available"})
+			return
+		}
 	}
 
 	// 保存到数据库
@@ -138,11 +139,12 @@ func OpenListener(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": 400, "data": "Listener is already running"})
 		return
 	}
-
-	// 检查端口是否可用
-	if !isPortAvailable(listener.ListenAddress) {
-		c.JSON(http.StatusOK, gin.H{"status": 400, "data": "Port is not available"})
-		return
+	if lis.Type != "oss" {
+		// 检查端口是否可用
+		if !isPortAvailable(listener.ListenAddress) {
+			c.JSON(http.StatusOK, gin.H{"status": 400, "data": "Port is not available"})
+			return
+		}
 	}
 
 	// 启动监听器
@@ -282,7 +284,7 @@ func stopListener(listenerType, listenerAddress string) error {
 	case "oss":
 		// OSS客户端会通过StopChan优雅关闭
 		// 等待一小段时间确保关闭完成
-		time.Sleep(2 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 
 	// 从管理器移除
@@ -571,7 +573,7 @@ func startOSSServer(listenerAddress string) error {
 		logger.Info("OSS client starting for endpoint:", endpoint)
 
 		// 启动OSS处理
-		oss.HandleOSSConnection(endpoint, accessKeyID, accessKeySecret, bucketName)
+		oss.HandleOSSConnection(endpoint, accessKeyID, accessKeySecret, bucketName, instance.StopChan)
 
 		logger.Info("OSS client stopped:", endpoint)
 	}()
